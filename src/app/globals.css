@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+/* Self-hosted typography (CSP: font-src 'self' data:) */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/fraunces";
+@import "@fontsource/noto-sans-arabic/400.css";
+@import "@fontsource/noto-sans-arabic/500.css";
+@import "@fontsource/noto-sans-arabic/700.css";
+
+/*
+ * Visit Imedwan design tokens (spec section 9 — brand system).
+ *
+ * Four brand hues, each as a usable ramp:
+ *   forest  — Forest Green  (primary actions, brand, success)
+ *   water   — Sky Blue      (links, info, water motif)
+ *   rocky   — Rocky Blue    (cool neutral text/borders — mountain slate)
+ *   peach   — Peach Yellow  (accent CTA, highlights, warning)
+ *
+ * Palette values are derived from the four spec colour names and are kept
+ * entirely in this file so an exact-spec correction is a token edit, not a
+ * component rewrite. Components always use semantic utilities
+ * (bg-forest-600, text-rocky-700…) — never raw hexes.
+ */
+@theme {
+  /* --- Forest Green ------------------------------------------------------ */
+  --color-forest-950: #06261a;
+  --color-forest-900: #0d3a29;
+  --color-forest-800: #134f39;
+  --color-forest-700: #196549;
+  --color-forest-600: #1f7a58; /* primary */
+  --color-forest-500: #2c9169;
+  --color-forest-400: #4aab84;
+  --color-forest-300: #79c4a5;
+  --color-forest-200: #a5d9c4;
+  --color-forest-100: #d4efe3;
+  --color-forest-50: #edf9f3;
+
+  /* --- Sky Blue (water) -------------------------------------------------- */
+  --color-water-900: #0a4668;
+  --color-water-800: #0f5f8c;
+  --color-water-700: #1678ab;
+  --color-water-600: #1e8fc7;
+  --color-water-500: #35a7dd;
+  --color-water-400: #62bde9;
+  --color-water-300: #93d2f1;
+  --color-water-200: #bfe6f7;
+  --color-water-100: #e2f4fc;
+  --color-water-50: #f1faff;
+
+  /* --- Rocky Blue (neutral / mountain slate) ----------------------------- */
+  --color-rocky-950: #101a24;
+  --color-rocky-900: #17222e; /* ink */
+  --color-rocky-800: #26333f;
+  --color-rocky-700: #3a4a58;
+  --color-rocky-600: #51636f;
+  --color-rocky-500: #6a7f8f;
+  --color-rocky-400: #93a6b3;
+  --color-rocky-300: #bccad4;
+  --color-rocky-200: #d9e2e9;
+  --color-rocky-100: #eef2f6;
+  --color-rocky-50: #f7f9fb;
+
+  /* --- Peach Yellow ------------------------------------------------------ */
+  --color-peach-800: #7d4d10;
+  --color-peach-700: #a8691a;
+  --color-peach-600: #c9801f;
+  --color-peach-500: #e29a33;
+  --color-peach-400: #f5b451; /* accent fill */
+  --color-peach-300: #ffcd85;
+  --color-peach-200: #ffe1b3;
+  --color-peach-100: #fff2dd;
+  --color-peach-50: #fffaf1;
+
+  /* --- Semantic extras --------------------------------------------------- */
+  --color-danger-700: #a9372a;
+  --color-danger-600: #c44536;
+  --color-danger-500: #d95f50;
+  --color-danger-100: #fbded9;
+  --color-danger-50: #fdefec;
+
+  --color-paper: #fbfaf7; /* warm editorial background */
+  --color-ink: #17222e; /* body text (= rocky-900) */
+
+  /* --- Typography -------------------------------------------------------- */
+  --font-sans: "Inter Variable", "Noto Sans Arabic", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Fraunces Variable", "Iowan Old Style", Georgia, ui-serif, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* --- Shapes ------------------------------------------------------------ */
+  --radius-card: 0.75rem; /* 2xl-ish cards */
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One consistent, visible focus ring everywhere (WCAG 2.4.7). */
+  :focus-visible {
+    outline: 2px solid var(--color-water-700);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-peach-300);
+    color: var(--color-rocky-950);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  /* Forms inherit sane defaults even outside our Field component. */
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Arabic / RTL (unlayered so it beats Tailwind's utility layer)
+ * ------------------------------------------------------------------------- */
+[lang="ar"] body {
+  font-family: "Noto Sans Arabic", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+[lang="ar"] .font-display {
+  font-family: "Noto Sans Arabic", ui-serif, Georgia, serif;
+}
+
+/* ---------------------------------------------------------------------------
+ * Utilities
+ * ------------------------------------------------------------------------- */
+
+/* Skip link: visible only when focused. */
+.skip-link {
+  position: absolute;
+  inset-inline-start: 1rem;
+  inset-block-start: -3.5rem;
+  z-index: 100;
+  border-radius: 0.5rem;
+  background-color: var(--color-forest-700);
+  color: #fff;
+  padding: 0.6rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: inset-block-start 0.15s ease;
+}
+.skip-link:focus {
+  inset-block-start: 1rem;
+}
+
+/* Rendered CMS body copy (journal entries, place descriptions, legal docs). */
+.cms-body {
+  line-height: 1.75;
+  color: var(--color-rocky-800);
+}
+.cms-body > * + * {
+  margin-block-start: 1em;
+}
+.cms-body h2 {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--color-rocky-900);
+}
+.cms-body h3 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-rocky-900);
+}
+.cms-body a {
+  color: var(--color-water-700);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cms-body ul,
+.cms-body ol {
+  padding-inline-start: 1.4em;
+}
+.cms-body ul {
+  list-style: disc;
+}
+.cms-body ol {
+  list-style: decimal;
+}
+.cms-body blockquote {
+  border-inline-start: 3px solid var(--color-peach-400);
+  padding-inline-start: 1em;
+  font-style: italic;
+  color: var(--color-rocky-600);
+}
+
+/* Skeleton shimmer for loading states. */
+.skeleton {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-rocky-100) 0%,
+    var(--color-rocky-50) 50%,
+    var(--color-rocky-100) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "name": "visit-imedwan",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Visit Imedwan — destination-first tourism platform for Imedwan / Asghmo Ait Zaghar, Ouarzazate, Morocco.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"**/*.{ts,tsx,css,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,css,json,md}\"",
+    "db:start": "node scripts/db.mjs start",
+    "db:stop": "node scripts/db.mjs stop",
+    "db:status": "node scripts/db.mjs status",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed",
+    "prisma:studio": "prisma studio",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "postinstall": "prisma generate"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1148.0",
+    "@fontsource-variable/fraunces": "^5.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/noto-sans-arabic": "^5.3.0",
+    "@node-rs/argon2": "^2.2.2",
+    "@prisma/client": "6.19.3",
+    "next": "15.5.27",
+    "nodemailer": "^10.0.16",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.64.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24",
+    "@types/nodemailer": "^6",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "embedded-postgres": "17.10.0-beta.17",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.27",
+    "postcss": "^8",
+    "prettier": "^3.9.9",
+    "prisma": "6.19.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "allowScripts": {
+    "@embedded-postgres/windows-x64@17.10.0-beta.17": true,
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "prisma@6.19.3": true,
+    "unrs-resolver@1.12.2": true
+  }
+}

@@ -1,0 +1,1081 @@
+// ============================================================================
+// Visit Imedwan — Prisma schema
+// ----------------------------------------------------------------------------
+// Production-grade relational schema for the Visit Imedwan destination-first
+// tourism platform (PostgreSQL).
+//
+// Design notes:
+// - Money is stored as Decimal(12,2) with an explicit currency code (MAD V1).
+// - Dates for availability/bookings are date-only (@db.Date).
+// - Polymorphic associations use dedicated nullable FK columns so referential
+//   integrity is enforced by the database (exactly-one is app-enforced).
+// - The Bookable table is the unified booking-engine target: one engine for
+//   accommodation units and guide services (and future categories).
+// - Nothing here encodes invented destination facts: coordinates, prices,
+//   availability only exist when supplied by verified/provider data.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  CONTENT_MANAGER
+  BUSINESS_OWNER
+  GUIDE
+  CUSTOMER
+}
+
+/// Content/business truth-level, per specification section 13.
+enum VerificationStatus {
+  VERIFIED
+  PROJECT_PROVIDED
+  PROVIDER_PROVIDED
+  EDITORIAL
+  PENDING_VERIFICATION
+}
+
+/// CMS + approval workflow: DRAFT -> PENDING_REVIEW -> APPROVED -> PUBLISHED,
+/// REJECTED -> (edit) -> DRAFT -> ... ; ARCHIVED for unpublishing.
+enum PublicationStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  PUBLISHED
+  REJECTED
+  ARCHIVED
+}
+
+enum BusinessType {
+  ACCOMMODATION
+  GUIDE
+  RESTAURANT
+  TRANSPORT
+  EXPERIENCE
+  ACTIVITY
+  EVENT
+  PARTNER
+}
+
+/// V1 bookable categories: ACCOMMODATION and GUIDE only. Future marketplace
+/// categories are reserved as enum values (no UI is built for them).
+enum BookableCategory {
+  ACCOMMODATION
+  GUIDE
+}
+
+enum AccommodationType {
+  GUESTHOUSE
+  GITE
+  LOCAL_STAY
+  TRADITIONAL
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  REFUNDED
+  FAILED
+}
+
+enum PaymentMode {
+  FULL
+  DEPOSIT
+}
+
+enum AvailabilityState {
+  AVAILABLE
+  UNAVAILABLE
+  BLOCKED
+  BOOKED
+}
+
+/// Price calculation unit. Accommodation uses NIGHT; guides use PERSON, DAY or
+/// SERVICE depending on how the provider prices.
+enum PricingUnit {
+  NIGHT
+  PERSON
+  DAY
+  SERVICE
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ContentKind {
+  PLACE
+  DESTINATION
+  STORY
+  GUIDE
+  ACCOMMODATION
+  EDITORIAL
+  EXPERIENCE
+  EVENT
+  RESTAURANT
+  TRAVEL_GUIDE
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+}
+
+/// Wishlist target types (V1: places, accommodations, guides).
+enum WishlistTarget {
+  PLACE
+  ACCOMMODATION
+  GUIDE
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  DUPLICATE
+}
+
+enum MapProviderKind {
+  NONE
+  OSM
+  MAPBOX
+  GOOGLE
+}
+
+// ---------------------------------------------------------------------------
+// Identity, auth, RBAC
+// ---------------------------------------------------------------------------
+
+model User {
+  id                String     @id @default(cuid())
+  email             String     @unique
+  passwordHash      String
+  role              Role       @default(CUSTOMER)
+  status            UserStatus @default(ACTIVE)
+  name              String?
+  phone             String?
+  locale            String     @default("en") // BCP-47: en | fr | ar
+  emailVerifiedAt   DateTime?
+  failedLoginCount  Int        @default(0)
+  lockedUntil       DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  sessions          Session[]
+  authTokens        AuthToken[]
+  businesses        Business[]
+  providerProfile   ProviderProfile?
+  bookings          Booking[]
+  reviews           Review[]
+  wishlistItems     WishlistItem[]
+  notifications     Notification[]
+  mediaUploads      Media[]
+  mediaComments     MediaComment[]
+  mediaLikes        MediaLike[]
+  authoredContent   Content[]
+  auditLogs         AuditLog[]
+  aiConversations   AIConversation[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model ProviderProfile {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName String?
+  bio         String?
+  verifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("provider_profiles")
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique // sha256 of the opaque session token
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  lastSeenAt DateTime  @default(now())
+  ip         String?
+  userAgent  String?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model AuthToken {
+  id        String        @id @default(cuid())
+  tokenHash String        @unique
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      AuthTokenType
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime      @default(now())
+
+  @@index([userId, type])
+  @@map("auth_tokens")
+}
+
+/// Server-side RBAC. `Role` is assigned per user; permissions are seeded from
+/// the code-defined permission map (src/lib/auth/permissions.ts) so the matrix
+/// can be audited in the database as well as in code.
+model Permission {
+  id          String          @id @default(cuid())
+  key         String          @unique // e.g. "business:approve"
+  description String?
+  createdAt   DateTime        @default(now())
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  role         Role
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([role, permissionId])
+  @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// Destination & places (content layer)
+// ---------------------------------------------------------------------------
+
+model Destination {
+  id                 String   @id @default(cuid())
+  slug               String   @unique // "imedwan"
+  status             PublicationStatus @default(DRAFT)
+  verificationStatus VerificationStatus @default(PENDING_VERIFICATION)
+  // Coordinates are intentionally nullable: only verified coordinates may be
+  // displayed. Never invent coordinates.
+  lat                Float?
+  lng                Float?
+  heroMediaId        String?
+  ogImageId          String?
+  noIndex            Boolean  @default(false)
+  featured           Boolean  @default(false)
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  translations       DestinationTranslation[]
+  places             Place[]
+  businesses         Business[]
+
+  @@index([status])
+  @@map("destinations")
+}
+
+model DestinationTranslation {
+  id                 String           @id @default(cuid())
+  destinationId      String
+  destination        Destination      @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  locale             String // en | fr | ar
+  name               String
+  slogan             String?
+  summary            String?
+  body               String?
+  seoTitle           String?
+  seoDescription     String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@unique([destinationId, locale])
+  @@map("destination_translations")
+}
+
+model Place {
+  id                 String   @id @default(cuid())
+  destinationId      String
+  destination        Destination @relation(fields: [destinationId], references: [id])
+  slug               String   @unique // "amda", "amajr", ...
+  /// Project-provided place type label (e.g. "natural water pool",
+  /// "waterfall", "fields"). Free-form because types are editorial.
+  typeLabel          String?
+  status             PublicationStatus @default(DRAFT)
+  verificationStatus VerificationStatus @default(PENDING_VERIFICATION)
+  /// Verified coordinates only — null means unknown, and nothing is displayed.
+  lat                Float?
+  lng                Float?
+  heroMediaId        String?
+  ogImageId          String?
+  noIndex            Boolean  @default(false)
+  featured           Boolean  @default(false)
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  translations       PlaceTranslation[]
+  media              Media[]
+  albums             MediaAlbum[]
+  wishlistItems      WishlistItem[]
+
+  @@index([destinationId, status])
+  @@index([status, featured])
+  @@map("places")
+}
+
+model PlaceTranslation {
+  id                 String   @id @default(cuid())
+  placeId            String
+  place              Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  locale             String
+  name               String
+  /// Localized place type label (e.g. "Natural water pool" / "بركة مائية طبيعية").
+  typeLabel          String?
+  summary            String?
+  body               String?
+  seoTitle           String?
+  seoDescription     String?
+  verificationStatus VerificationStatus?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([placeId, locale])
+  @@map("place_translations")
+}
+
+/// Editorial CMS content (stories, journal, destination pages, planning pages).
+model Content {
+  id                 String       @id @default(cuid())
+  kind               ContentKind
+  slug               String       @unique
+  status             PublicationStatus @default(DRAFT)
+  verificationStatus VerificationStatus @default(PENDING_VERIFICATION)
+  authorId           String?
+  author             User?        @relation(fields: [authorId], references: [id])
+  heroMediaId        String?
+  ogImageId          String?
+  noIndex            Boolean      @default(false)
+  featured           Boolean      @default(false)
+  sortOrder          Int          @default(0)
+  publishedAt        DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  translations       ContentTranslation[]
+  media              Media[]
+  albums             MediaAlbum[]
+
+  @@index([kind, status])
+  @@index([status, featured])
+  @@map("content")
+}
+
+model ContentTranslation {
+  id                 String   @id @default(cuid())
+  contentId          String
+  content            Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  locale             String
+  title              String
+  summary            String?
+  body               String? // Markdown
+  seoTitle           String?
+  seoDescription     String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([contentId, locale])
+  @@map("content_translations")
+}
+
+// ---------------------------------------------------------------------------
+// Businesses (providers) & bookable services
+// ---------------------------------------------------------------------------
+
+model Business {
+  id                 String       @id @default(cuid())
+  ownerId            String
+  owner              User         @relation(fields: [ownerId], references: [id])
+  destinationId      String?
+  destination        Destination? @relation(fields: [destinationId], references: [id])
+  type               BusinessType
+  slug               String       @unique
+  /// Default-locale display name; localized names live in BusinessTranslation.
+  name               String
+  phone              String?
+  email              String?
+  address            String?
+  /// Verified coordinates only — null means unknown.
+  lat                Float?
+  lng                Float?
+  socialLinks        Json?
+  verificationStatus VerificationStatus @default(PENDING_VERIFICATION)
+  status             PublicationStatus   @default(DRAFT)
+  submittedAt        DateTime?
+  approvedAt         DateTime?
+  approvedById       String?
+  /// Provider-level booking configuration overrides
+  /// (depositEnabled, depositPercent, freeCancellationHours, ...).
+  config             Json?
+  heroMediaId        String?
+  ogImageId          String?
+  noIndex            Boolean      @default(false)
+  featured           Boolean      @default(false)
+  sortOrder          Int          @default(0)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  translations       BusinessTranslation[]
+  accommodation      Accommodation?
+  guide              Guide?
+  bookables          Bookable[]
+  bookings           Booking[]
+  media              Media[]
+  albums             MediaAlbum[]
+  reviews            Review[]
+  wishlistItems      WishlistItem[]
+
+  @@index([ownerId])
+  @@index([type, status])
+  @@index([destinationId, status])
+  @@map("businesses")
+}
+
+model BusinessTranslation {
+  id                 String   @id @default(cuid())
+  businessId         String
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locale             String
+  name               String
+  description        String?
+  seoTitle           String?
+  seoDescription     String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([businessId, locale])
+  @@map("business_translations")
+}
+
+model Accommodation {
+  id          String            @id @default(cuid())
+  businessId  String            @unique
+  business    Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  type        AccommodationType @default(GUESTHOUSE)
+  /// Total property capacity when the provider declares it (nullable: unknown).
+  capacity    Int?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  units       AccommodationUnit[]
+
+  @@map("accommodations")
+}
+
+model AccommodationUnit {
+  id              String         @id @default(cuid())
+  accommodationId String
+  accommodation   Accommodation  @relation(fields: [accommodationId], references: [id], onDelete: Cascade)
+  bookable        Bookable?      @relation(fields: [bookableId], references: [id])
+  bookableId      String?        @unique
+  name            String
+  description     String?
+  /// Declared sleeping capacity (provider-provided).
+  capacity        Int?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([accommodationId])
+  @@map("accommodation_units")
+}
+
+model Guide {
+  id           String   @id @default(cuid())
+  businessId   String   @unique
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  /// BCP-47 / ISO 639 codes the guide speaks (e.g. "fr", "ar", "zgh", "en").
+  languages    String[] @default([])
+  /// Provider-declared areas covered (free text; never invented by platform).
+  areasCovered String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  services     GuideService[]
+
+  @@map("guides")
+}
+
+model GuideService {
+  id          String      @id @default(cuid())
+  guideId     String
+  guide       Guide       @relation(fields: [guideId], references: [id], onDelete: Cascade)
+  bookable    Bookable?   @relation(fields: [bookableId], references: [id])
+  bookableId  String?     @unique
+  name        String
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([guideId])
+  @@map("guide_services")
+}
+
+/// The unified booking-engine target. One engine prices, checks availability
+/// and books every Bookable regardless of category.
+model Bookable {
+  id                 String            @id @default(cuid())
+  category           BookableCategory
+  businessId         String
+  business           Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  slug               String            @unique
+  /// Declared capacity for the bookable (unit capacity / participants).
+  capacity           Int               @default(1)
+  status             PublicationStatus @default(DRAFT)
+  verificationStatus VerificationStatus @default(PROVIDER_PROVIDED)
+  /// Booking configuration overrides at service level
+  /// (depositEnabled, depositPercent, freeCancellationHours, ...).
+  config             Json?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  unit               AccommodationUnit?
+  guideService       GuideService?
+  prices             Price[]
+  availabilityRules  AvailabilityRule[]
+  availabilityBlocks AvailabilityBlock[]
+  bookingItems       BookingItem[]
+  reviews            Review[]
+
+  @@index([businessId, status])
+  @@index([category, status])
+  @@map("bookables")
+}
+
+// ---------------------------------------------------------------------------
+// Pricing & availability
+// ---------------------------------------------------------------------------
+
+/// Server-side price rules. Base price: validFrom/validTo null. Seasonal
+/// rules: a date window with a higher priority wins when it covers the stay.
+model Price {
+  id         String   @id @default(cuid())
+  bookableId String
+  bookable   Bookable @relation(fields: [bookableId], references: [id], onDelete: Cascade)
+  unit       PricingUnit
+  amount     Decimal  @db.Decimal(12, 2)
+  currency   String   @default("MAD")
+  validFrom  DateTime? @db.Date
+  validTo    DateTime? @db.Date
+  priority   Int      @default(0)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([bookableId, active])
+  @@map("prices")
+}
+
+/// Recurring/open-ended capacity declarations ("from date X, N per day").
+model AvailabilityRule {
+  id         String   @id @default(cuid())
+  bookableId String
+  bookable   Bookable @relation(fields: [bookableId], references: [id], onDelete: Cascade)
+  startDate  DateTime @db.Date
+  /// null = open-ended
+  endDate    DateTime?  @db.Date
+  /// 0 (Sunday) .. 6 (Saturday); null = applies every day
+  weekday    Int?
+  capacity   Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([bookableId, startDate])
+  @@map("availability_rules")
+}
+
+/// Explicit blocks/blackouts (maintenance, personal use, sold out manually).
+model AvailabilityBlock {
+  id              String            @id @default(cuid())
+  bookableId      String
+  bookable        Bookable          @relation(fields: [bookableId], references: [id], onDelete: Cascade)
+  startDate       DateTime          @db.Date
+  endDate         DateTime          @db.Date
+  state           AvailabilityState @default(BLOCKED)
+  /// Optional hard capacity override for the range (null = fully blocked).
+  capacityOverride Int?
+  reason          String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([bookableId, startDate])
+  @@map("availability_blocks")
+}
+
+// ---------------------------------------------------------------------------
+// Booking engine
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id                   String        @id @default(cuid())
+  /// Human-friendly reference shown to customers, e.g. "VI-8F3K2A".
+  reference            String        @unique
+  customerId           String
+  customer             User          @relation(fields: [customerId], references: [id])
+  businessId           String
+  business             Business      @relation(fields: [businessId], references: [id])
+  status               BookingStatus @default(PENDING)
+  paymentStatus        PaymentStatus @default(UNPAID)
+  paymentMode          PaymentMode   @default(FULL)
+  startDate            DateTime      @db.Date
+  endDate              DateTime      @db.Date
+  guests               Int           @default(1)
+  currency             String        @default("MAD")
+  subtotal             Decimal       @db.Decimal(12, 2)
+  discount             Decimal       @default(0) @db.Decimal(12, 2)
+  /// Platform commission snapshot (rate resolved from Settings at booking time).
+  commissionRate       Decimal       @default(0) @db.Decimal(5, 2)
+  commissionAmount     Decimal       @default(0) @db.Decimal(12, 2)
+  total                Decimal       @db.Decimal(12, 2)
+  depositEnabled       Boolean       @default(false)
+  depositAmount        Decimal?      @db.Decimal(12, 2)
+  amountPaid           Decimal       @default(0) @db.Decimal(12, 2)
+  amountRefunded       Decimal       @default(0) @db.Decimal(12, 2)
+  cancellationPolicyText String?
+  /// Client-supplied key to make booking creation idempotent.
+  idempotencyKey       String?       @unique
+  /// Pending unpaid holds expire after the configured window.
+  holdExpiresAt        DateTime?
+  cancelReason         String?
+  confirmedAt          DateTime?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  customerName         String?
+  customerEmail        String?
+  customerPhone        String?
+  customerNote         String?
+
+  items                BookingItem[]
+  payments             Payment[]
+  refunds              Refund[]
+  commissions          Commission[]
+  reviews              Review[]
+
+  @@index([customerId, createdAt])
+  @@index([businessId, status])
+  @@index([status, holdExpiresAt])
+  @@map("bookings")
+}
+
+model BookingItem {
+  id          String      @id @default(cuid())
+  bookingId   String
+  booking     Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  bookableId  String
+  bookable    Bookable    @relation(fields: [bookableId], references: [id])
+  startDate   DateTime    @db.Date
+  endDate     DateTime    @db.Date
+  guests      Int         @default(1)
+  /// Number of chargeable units: nights for accommodation, persons/days/services
+  /// for guides, resolved server-side from the pricing unit.
+  quantity    Int
+  pricingUnit PricingUnit
+  /// Server-computed unit price snapshot.
+  unitPrice   Decimal     @db.Decimal(12, 2)
+  subtotal    Decimal     @db.Decimal(12, 2)
+
+  @@index([bookableId, startDate, endDate])
+  @@map("booking_items")
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  bookingId       String
+  booking         Booking       @relation(fields: [bookingId], references: [id])
+  /// Payment provider key from the abstraction registry ("manual", "mock", ...).
+  provider        String
+  mode            PaymentMode   @default(FULL)
+  status          PaymentStatus @default(UNPAID)
+  amount          Decimal       @db.Decimal(12, 2)
+  currency        String        @default("MAD")
+  /// Idempotency key for createPayment — repeated requests reuse the row.
+  idempotencyKey  String        @unique
+  /// Provider-side transaction/intent id (metadata only — never card data).
+  externalId      String?       @unique
+  providerPayload Json?
+  failureReason   String?
+  paidAt          DateTime?
+  failedAt        DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  refunds         Refund[]
+  webhookEvents   WebhookEvent[]
+
+  @@index([bookingId, status])
+  @@map("payments")
+}
+
+model Refund {
+  id             String       @id @default(cuid())
+  bookingId      String
+  booking        Booking      @relation(fields: [bookingId], references: [id])
+  paymentId      String
+  payment        Payment      @relation(fields: [paymentId], references: [id])
+  amount         Decimal      @db.Decimal(12, 2)
+  currency       String       @default("MAD")
+  status         RefundStatus @default(PENDING)
+  externalId     String?      @unique
+  reason         String?
+  idempotencyKey String       @unique
+  processedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([bookingId, status])
+  @@map("refunds")
+}
+
+/// Snapshot of commission owed at booking time; rate comes from Settings
+/// (never hardcoded).
+model Commission {
+  id          String   @id @default(cuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  ratePercent Decimal  @db.Decimal(5, 2)
+  baseAmount  Decimal  @db.Decimal(12, 2)
+  amount      Decimal  @db.Decimal(12, 2)
+  currency    String   @default("MAD")
+  createdAt   DateTime @default(now())
+
+  @@index([bookingId])
+  @@map("commissions")
+}
+
+/// Payment webhook events with duplicate protection.
+model WebhookEvent {
+  id              String        @id @default(cuid())
+  provider        String
+  externalEventId String
+  paymentId       String?
+  payment         Payment?      @relation(fields: [paymentId], references: [id])
+  type            String
+  status          WebhookStatus @default(RECEIVED)
+  signatureValid  Boolean?
+  payload         Json?
+  error           String?
+  receivedAt      DateTime      @default(now())
+  processedAt     DateTime?
+
+  @@unique([provider, externalEventId])
+  @@map("webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// Reviews, wishlist, media, notifications
+// ---------------------------------------------------------------------------
+
+model Review {
+  id           String       @id @default(cuid())
+  customerId   String
+  customer     User         @relation(fields: [customerId], references: [id])
+  bookingId    String
+  booking      Booking      @relation(fields: [bookingId], references: [id])
+  bookableId   String
+  bookable     Bookable     @relation(fields: [bookableId], references: [id])
+  businessId   String
+  business     Business     @relation(fields: [businessId], references: [id])
+  rating       Int // 1..5, validated server-side
+  comment      String?
+  status       ReviewStatus @default(PENDING)
+  moderatedAt  DateTime?
+  moderatedById String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  /// One review per customer per bookable per booking.
+  @@unique([bookingId, bookableId])
+  @@index([businessId, status])
+  @@index([bookableId, status])
+  @@map("reviews")
+}
+
+/// Private, per-user wishlist. Exactly one target FK is set (app-enforced;
+/// Postgres unique indexes ignore NULLs).
+model WishlistItem {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placeId    String?
+  place      Place?    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  businessId String?
+  business   Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+
+  @@unique([userId, placeId])
+  @@unique([userId, businessId])
+  @@index([userId])
+  @@map("wishlist_items")
+}
+
+model MediaAlbum {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  title       String
+  description String?
+  placeId     String?
+  place       Place?    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  contentId   String?
+  content     Content?  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  businessId  String?
+  business    Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  media       Media[]
+
+  @@index([placeId])
+  @@index([businessId])
+  @@map("media_albums")
+}
+
+model Media {
+  id                 String           @id @default(cuid())
+  kind               MediaKind        @default(IMAGE)
+  /// Storage key within the storage abstraction (never a local path leak).
+  storageKey         String           @unique
+  mimeType           String
+  sizeBytes          Int
+  width              Int?
+  height              Int?
+  /// Required for accessibility.
+  alt                String
+  caption            String?
+  status             PublicationStatus @default(PENDING_REVIEW)
+  verificationStatus VerificationStatus @default(PROVIDER_PROVIDED)
+  uploadedById       String?
+  uploadedBy         User?            @relation(fields: [uploadedById], references: [id])
+  albumId            String?
+  album              MediaAlbum?      @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  /// Exactly one subject association (app-enforced), FK-enforced each.
+  placeId            String?
+  place              Place?           @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  contentId          String?
+  content            Content?         @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  businessId         String?
+  business           Business?        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  comments           MediaComment[]
+  likes              MediaLike[]
+
+  @@index([status, createdAt])
+  @@index([placeId])
+  @@index([businessId])
+  @@index([contentId])
+  @@map("media")
+}
+
+/// Comments live on media; replies go exactly one level deep (parent.parentId
+/// must be null — enforced in service layer and asserted in tests).
+model MediaComment {
+  id        String       @id @default(cuid())
+  mediaId   String
+  media     Media        @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parentId  String?
+  parent    MediaComment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  body      String
+  status    ReviewStatus @default(PENDING)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  replies   MediaComment[] @relation("CommentReplies")
+
+  @@index([mediaId, createdAt])
+  @@map("media_comments")
+}
+
+model MediaLike {
+  id        String   @id @default(cuid())
+  mediaId   String
+  media     Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([mediaId, userId])
+  @@map("media_likes")
+}
+
+model Notification {
+  id           String              @id @default(cuid())
+  userId       String
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel      NotificationChannel @default(IN_APP)
+  /// Notification type key resolved to localized copy via i18n dictionaries.
+  type         String
+  /// Structured payload for interpolation (booking ref, amounts, ...).
+  data         Json?
+  locale       String              @default("en")
+  readAt       DateTime?
+  emailSentAt  DateTime?
+  createdAt    DateTime            @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Platform: settings, flags, audit, rate limits, analytics, AI reservation
+// ---------------------------------------------------------------------------
+
+/// Global business configuration (commissions, deposits, hold windows, media
+/// limits, SEO defaults, review eligibility, ...). Keys are documented in
+/// docs/configuration.md. Values are JSON.
+model Setting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model FeatureFlag {
+  key         String   @id
+  enabled     Boolean  @default(false)
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String // e.g. "auth.login.success", "business.approved"
+  entityType String?
+  entityId   String?
+  /// Never contains secrets: payloads are redacted before writing.
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@map("audit_logs")
+}
+
+/// Fixed-window rate limiting that works across instances.
+model RateLimit {
+  key         String   @id // e.g. "login:email@example.com:1.2.3.4"
+  windowStart DateTime
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@map("rate_limits")
+}
+
+model AnalyticsEvent {
+  id         String   @id @default(cuid())
+  type       String // e.g. "page_view", "place_view", "booking_completed"
+  entityType String?
+  entityId   String?
+  path       String?
+  userId     String?
+  sessionId  String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@index([entityType, entityId])
+  @@map("analytics_events")
+}
+
+// ---------------------------------------------------------------------------
+// AI concierge reservation (V3 — architecture only, feature-flagged off)
+// ---------------------------------------------------------------------------
+
+model AIConversation {
+  id        String      @id @default(cuid())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  messages  AIMessage[]
+
+  @@index([userId, createdAt])
+  @@map("ai_conversations")
+}
+
+model AIMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String // "user" | "assistant" | "tool"
+  content        String
+  /// Tool calls / retrieval metadata — grounded in platform data only.
+  meta           Json?
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId, createdAt])
+  @@map("ai_messages")
+}
